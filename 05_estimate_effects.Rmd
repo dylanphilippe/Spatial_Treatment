@@ -20,6 +20,10 @@ jupyter:
 Define constants that are used to determine the width of bins (`d_bin_size`) and the maximum distance up to which effects are estimated (`d_bin_max`), as well as a distance after which treatment effects are assumed to be 0 for the purpose of calculating standard errors (`dist_no_effect_var`).
 
 ```{r define-constants}
+rm(list = ls())
+gc()
+
+
 d_bin_size <- 0.025
 d_bin_max <- 0.25
 num_bins <- ceiling(d_bin_max/d_bin_size)
@@ -62,7 +66,7 @@ dat_Y <- dat_A %>%
   # filter to get "Restaurants and Other Eating Places"
   filter(floor(naics_code/100) == 7225) %>% 
   mutate(Y = visits) %>% 
-  select(a_id,Y)
+  dplyr::select(a_id,Y)
 # distance between outcome units and candidate locations
 dat_D_IS <- rbind(dat_D,dat_D_cand_sel) %>% 
   # only need businesses that are outcome units
@@ -71,7 +75,7 @@ dat_D_IS <- rbind(dat_D,dat_D_cand_sel) %>%
   filter(dist_mi < max(2*d_bin_max,dist_no_effect_var)) %>%
   # use distances in miles
   rename(d = dist_mi) %>% 
-  select(a_id,s_id,d)
+  dplyr::select(a_id,s_id,d)
 ```
 
 

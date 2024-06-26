@@ -1,6 +1,9 @@
 # code that generates the data
 00_simulate_data.R
 
+# heavy files
+neural-net/predicted_activation-2021-11-23--13-37.zip
+
 # History files
 .Rhistory
 .Rapp.history

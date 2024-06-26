@@ -48,6 +48,11 @@ library(readr)
 library(reticulate)
 library(sf)
 library(tidyr)
+library(installr)
+library(tmap)
+
+# Install Rtools
+install.Rtools(check = TRUE, check_r_update = TRUE)
 ```
 
 ## Source C++ and Python helper functions
@@ -60,7 +65,11 @@ source_python("dist_between_vectors.py")
 
 ## Pre-process neural net output
 
-Load the neural network activation
+Load the neural network activation 
+Note that you need to download the file: https://drive.google.com/file/d/15rUm87upjyKz3nRT0r39Mq0Gjqg6EmNS/view
+The dataset that we import as been generated with Python scripts: 
+  1- trains the neural net that predicts counterfactual (and real) treatment locations. 
+  2- predicts (likelihood of) counterfactual locations. Output: neural-net/predicted_activation-YYYY-MM-DD--hh-mm.csv
 
 ```{r load-activation}
 dat_pred_loc_in <- read_csv(unz("neural-net/predicted_activation-2021-11-23--13-37.zip",
@@ -68,13 +77,15 @@ dat_pred_loc_in <- read_csv(unz("neural-net/predicted_activation-2021-11-23--13-
                             col_types = "iliid", lazy=FALSE)
 ```
 
+
+
 and find their coordinates by matching each relative location to its center
 
 ```{r assign-coordinates}
 # load geo locations of center points
 dat_S <- readRDS("data/dat_S.rds")
 dat_S_candidate_random <- readRDS("data/dat_S_candidate_random.rds")
-S_geo_all <- rbind(dat_S %>% select(s_id, latitude,longitude),
+S_geo_all <- rbind(dat_S %>% dplyr::select(s_id, latitude,longitude),
                    dat_S_candidate_random)
 
 # x-y of central locations of the predictions
@@ -83,16 +94,20 @@ mat_S_xy <- cbind(S_geo_all$s_id,
                              pts=cbind(S_geo_all$longitude,S_geo_all$latitude)))
 colnames(mat_S_xy) <- c("s_id","x","y")
 
+a <- as.data.frame(mat_S_xy)
+
 # x-y of all grid prediction points
+# Here I changed left_join instead of the inner join. The problem was to attached longitude and latitude further down the code (number of column was no matching).
 mat_pred_xy <- dat_pred_loc_in %>% 
-    inner_join(as.data.frame(mat_S_xy) %>% rename(x_s=x,y_s=y), by="s_id") %>% 
+    left_join(as.data.frame(mat_S_xy) %>% rename(x_s=x,y_s=y), by="s_id") %>% 
   mutate(x = x_s + x,
-         y = y_s + y) %>% 
-  select(x, y) %>% 
-  as.matrix
+         y = y_s + y) %>%
+  dplyr::select(x, y) %>% as.matrix()
+
 # longitude and latitude of all grid prediction points
 mat_pred_lonlat <- sf_project(from="EPSG:6419", to="WGS84",
                               pts=mat_pred_xy)
+
 dat_pred_loc <- dat_pred_loc_in %>% 
   mutate(region_num = ceiling(row_number() / 101)) %>%
   group_by(region_num) %>%
@@ -101,12 +116,16 @@ dat_pred_loc <- dat_pred_loc_in %>%
   ungroup() %>%
   mutate(latitude = mat_pred_lonlat[,2],
          longitude = mat_pred_lonlat[,1]) %>% 
-  select(-x,-y)
+  dplyr::select(-x,-y)
+
 dat_pred_loc$latitude[is.nan(dat_pred_loc$latitude)]<-NA
+dat_pred_loc$longitude[is.nan(dat_pred_loc$longitude)]<-NA
 
 # remove (large!) temporary matrices
 rm(dat_pred_loc_in, mat_pred_xy, mat_pred_lonlat, mat_S_xy)
 ```
+
+
 
 
 ## Match on neural network activation
@@ -121,22 +140,22 @@ Split the neural network activations into those of real locations (to be matched
 dat_S_activation <- dat_pred_loc %>%
     filter(real_missing==TRUE,
            is_center==TRUE) %>% 
-    select(s_id,activation,p_cond)
+    dplyr::select(s_id,activation,p_cond)
 # candidate locations (used for matching)
 dat_cand_activation <- dat_pred_loc %>%
     filter(real_missing==FALSE) %>% 
     filter(!is.na(latitude), !is.na(longitude)) %>% 
     mutate(i = row_number()) %>% 
-    select(i,activation,p_cond, latitude, longitude)
+    dplyr::select(i,activation,p_cond, latitude, longitude)
 ```
 
 For each activation score of a real location, find the nearest neighbor activation in terms of activation and in terms of "conditional probability" (function of own activation and activation of nearby grid cells that were considered simultaneously).
 ```{r match-on-activations}
-match_a <- match_v(as.matrix(dat_S_activation %>% select(s_id,activation) %>% arrange(desc(activation))),
-                   as.matrix(dat_cand_activation %>% select(i,activation) %>% arrange(desc(activation))),
+match_a <- match_v(as.matrix(dat_S_activation %>% dplyr::select(s_id,activation) %>% arrange(desc(activation))),
+                   as.matrix(dat_cand_activation %>% dplyr::select(i,activation) %>% arrange(desc(activation))),
                    0,0)
-match_p <- match_v(as.matrix(dat_S_activation %>% select(s_id,p_cond) %>% arrange(desc(p_cond))),
-                   as.matrix(dat_cand_activation %>% select(i,p_cond) %>% arrange(desc(p_cond))),
+match_p <- match_v(as.matrix(dat_S_activation %>% dplyr::select(s_id,p_cond) %>% arrange(desc(p_cond))),
+                   as.matrix(dat_cand_activation %>% dplyr::select(i,p_cond) %>% arrange(desc(p_cond))),
                    0,0)
 ```
 
@@ -146,7 +165,7 @@ match_all <- sort(unique(c(match_a,match_p)))
 dat_cand <- dat_cand_activation %>% 
     filter(i %in% match_all) %>% 
     mutate(s_id = 1000 + row_number()) %>% 
-    select(s_id, latitude, longitude)
+    dplyr::select(s_id, latitude, longitude)
 ```
 
 But exclude counterfactual locations that are very close to real locations.
@@ -155,8 +174,8 @@ Calculating all these distances requires a lot of memory and is therefore done i
 
 ```{r exclude-too-close}
 # calculate pairwise distances between all real locations as a baseline
-dist_real <- dist_between(as.matrix(dat_S %>% select(s_id,latitude,longitude)),
-                          as.matrix(dat_S %>% select(s_id,latitude,longitude)),
+dist_real <- dist_between(as.matrix(dat_S %>% dplyr::select(s_id,latitude,longitude)),
+                          as.matrix(dat_S %>% dplyr::select(s_id,latitude,longitude)),
                           50) # don't need anything farther apart than 50 (skip farther for memory efficiency)
 # find all counterfactual locations that are too close to real locations
 dat_D_cand <- matrix(NA, nrow=0, ncol=3)
@@ -165,8 +184,8 @@ batch_num <- ceiling(nrow(dat_cand)/batch_size)
 for (b in seq(batch_num)) {
   # if (b%%100 == 1) { print(paste(b,"out of",batch_num,"batches,",Sys.time())); flush.console()}
   idx <- ((b-1)*batch_size + 1):min((b*batch_size),nrow(dat_cand))
-  tmp <- dist_between(as.matrix(dat_cand %>% select(s_id,latitude,longitude))[idx,],
-                      as.matrix(dat_S %>% select(s_id,latitude,longitude)),
+  tmp <- dist_between(as.matrix(dat_cand %>% dplyr::select(s_id,latitude,longitude))[idx,],
+                      as.matrix(dat_S %>% dplyr::select(s_id,latitude,longitude)),
                       min(dist_real[dist_real[,1]<dist_real[,2],3])*2/3)
   dat_D_cand <- rbind(dat_D_cand, tmp)
 }
@@ -175,6 +194,18 @@ dat_cand <- dat_cand %>% filter(!(s_id %in% dat_D_cand[,1]))
 rm(dat_D_cand, batch_size, batch_num, idx, tmp)
 
 ```
+
+
+
+Quick exploration
+```{r}
+dat_cand_sf <- st_as_sf(dat_cand, coords = c("longitude", "latitude"), crs = "EPSG:4326")
+
+tmap_leaflet(tm_shape(dat_cand_sf) + tm_dots())
+```
+
+
+
 
 
 ## Estimate preliminary propensity scores and match on those
@@ -202,8 +233,8 @@ batch_num <- ceiling(nrow(dat_cand)/batch_size)
 dat_D_cand <- matrix(NA, nrow=0, ncol=3)
 for (b in seq(batch_num)) {
     idx <- ((b-1)*batch_size + 1):(b*batch_size)
-    tmp <- dist_between(as.matrix(dat_cand %>% select(s_id,latitude,longitude) %>% slice(idx)),
-                        as.matrix(dat_A %>% select(a_id,latitude,longitude)))
+    tmp <- dist_between(as.matrix(dat_cand %>% dplyr::select(s_id,latitude,longitude) %>% slice(idx)),
+                        as.matrix(dat_A %>% dplyr::select(a_id,latitude,longitude)))
     dat_D_cand <- rbind(dat_D_cand, tmp)
 }
 colnames(dat_D_cand) <- c("s_id","a_id","dist_m")
@@ -220,9 +251,10 @@ dat_D_all <-  rbind(dat_D, dat_D_cand)
 rm(dat_D_cand)
 ```
 
-Next, for each outcome unit (restaurant), count the number of real treatment locations (grocery stores) to create a covariate that generates balance in treatment exposure.
+
+Next, for each outcome unit (restaurant), count the number of real treatment locations (grocery stores) to create a co variate that generates balance in treatment exposure.
 ```{r count-exposure-covariate}
-dat_outcome_ids <- dat_A %>% filter(floor(naics_code/100) == 7225) %>% select(a_id) %>% .$a_id
+dat_outcome_ids <- dat_A %>% filter(floor(naics_code/100) == 7225) %>% dplyr::select(a_id) %>% .$a_id
 
 # number of real treatment locations in each distance bin from each outcome unit
     # only outcome units within d_bin_max miles
@@ -243,6 +275,8 @@ dat_out_num_treat <- dat_D_all %>% filter(a_id %in% dat_outcome_ids, dist_mi < d
 # get the names of the distance bin columns for later use
 names_db_a <- sort(colnames(dat_out_num_treat)[-1])
 ```
+
+
 
 For each treatment location, count the number of outcome units as well as the average exposure of those outcome units, again by distance bin.
 Importantly, we want balance in exposure to *other* treatment locations.
@@ -279,8 +313,8 @@ dat_reg_p <- tmp %>%
                 values_fill = 0)
 # order columns in a more convenient way
 dat_reg_p <- dat_reg_p %>% 
-    select(all_of(sort(colnames(dat_reg_p)))) %>% 
-    select(s_id, starts_with("n_"), starts_with("db_a_"))
+    dplyr::select(all_of(sort(colnames(dat_reg_p)))) %>% 
+    dplyr::select(s_id, starts_with("n_"), starts_with("db_a_"))
 
 # add back treatment locations that have no outcome units near them
 dat_reg_p <- tibble(s_id = sort(unique(dat_D_all$s_id))) %>% 
@@ -306,6 +340,9 @@ dat_reg_p <- dat_reg_p %>%
               by = "s_id") %>% 
     mutate(W = s_id < 1000)
 ```
+
+
+
 
 
 ### Estimating the propensity score
@@ -339,13 +376,13 @@ match_propscore <- match_v(matT,matC,1,1)
 # kick out those that are too close to one another
 dSS <- dist_between(as.matrix(dat_cand %>% 
                                 filter(s_id %in% match_propscore) 
-                              %>% select(s_id, latitude, longitude)),
+                              %>% dplyr::select(s_id, latitude, longitude)),
                     as.matrix(dat_cand %>% 
                                 filter(s_id %in% match_propscore) 
-                              %>% select(s_id, latitude, longitude)),
+                              %>% dplyr::select(s_id, latitude, longitude)),
                     min(dist_real[dist_real[,1]<dist_real[,2],3]))
 dSS <- dSS[dSS[,1]<dSS[,2],]
-matC <- as.matrix(dat_reg_out %>% filter(W == FALSE, !(s_id %in% dSS[,1])) %>% select(s_id, p) %>% arrange(desc(p)))
+matC <- as.matrix(dat_reg_out %>% filter(W == FALSE, !(s_id %in% dSS[,1])) %>% dplyr::select(s_id, p) %>% arrange(desc(p)))
 match_propscore <- match_v(matT,matC,1,0)
 ```
 
@@ -369,18 +406,18 @@ dat_cand_sel <- dat_reg_out %>%
     inner_join(dat_cand, by = "s_id") %>% 
     mutate(s_id_old = s_id,
            s_id = 1000 + row_number()) %>% 
-    select(s_id, latitude, longitude, s_id_old)
+    dplyr::select(s_id, latitude, longitude, s_id_old)
 dat_D_cand_sel <- dat_D_all %>% 
     filter(s_id %in% match_propscore) %>% 
     inner_join(dat_cand_sel, by=c("s_id"="s_id_old")) %>% 
     mutate(s_id = s_id.y) %>% 
-    select(s_id, a_id, dist_m, dist_km, dist_mi)
+    dplyr::select(s_id, a_id, dist_m, dist_km, dist_mi)
 
 dat_reg_p_sel <- dat_reg_p %>% 
     filter(s_id < 1000 | s_id %in% match_propscore) %>% 
     left_join(dat_cand_sel %>% select(s_id, s_id_old), by = c("s_id" = "s_id_old")) %>%
     mutate(s_id = ifelse(is.na(s_id.y),s_id,s_id.y)) %>% 
-    select(-s_id.y)
+    dplyr::select(-s_id.y)
 ```
 
 
